@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Canvas Joystick Game</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background-color: #222;
+            font-family: Arial, sans-serif;
+        }
+
+        #gameContainer {
+            text-align: center;
+        }
+
+        canvas {
+            border: 2px solid #fff;
+            background-color: #000;
+        }
+
+        #info {
+            color: #fff;
+            margin-top: 20px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <canvas id="gameCanvas" width="800" height="600"></canvas>
+        <div id="info">Connect a gamepad/joystick and use the left analog stick to move the square</div>
+    </div>
+
+    <script src="game.js"></script>
+</body>
+</html>
