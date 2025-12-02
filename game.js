@@ -258,7 +258,7 @@ function handleShooting() {
             // Just pressed - start hold timer and fire first shot immediately
             lastBurstTime = 0;
             rapidFireTimer = 0;
-            rapidFireDelay = 30;
+            rapidFireDelay = 20;
             shootBurst(); // Fire first burst immediately
         } else {
             rapidFireTimer++;
