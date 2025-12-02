@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Canvas Joystick Game</title>
+    <title>Vibe Shooter</title>
     <style>
         body {
             margin: 0;
@@ -12,7 +12,7 @@
             justify-content: center;
             align-items: center;
             min-height: 100vh;
-            background-color: #222;
+            background: radial-gradient(circle at center, #333 0%, #111 100%);
             font-family: Arial, sans-serif;
         }
 
@@ -34,8 +34,8 @@
 </head>
 <body>
     <div id="gameContainer">
-        <canvas id="gameCanvas" width="800" height="600"></canvas>
-        <div id="info">Connect a gamepad/joystick and use the left analog stick to move the square</div>
+        <canvas id="gameCanvas" width="600" height="800"></canvas>
+        <div id="info">Use arrow keys to move, space bar to shoot. Or connect a gamepad/joystick to use left stick/D-pad to move and A button to shoot. Tap fire for burst shots, hold for rapid fire!</div>
     </div>
 
     <script src="game.js"></script>
