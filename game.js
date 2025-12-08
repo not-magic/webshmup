@@ -1,18 +1,16 @@
 // Canvas setup
-const canvas = document.getElementById('gameCanvas');
-const ctx = canvas.getContext('2d');
-const infoDiv = document.getElementById('info');
+const canvas = document.getElementById('canvas3d');
 
 // Game objects
 const ship = {
-    x: canvas.width / 2,
-    y: canvas.height - 250, // 250 pixels from bottom
+    body: Physics.addCollisionBody(canvas.width / 2, canvas.height - 250, 4.5, 0, 0, 0.2),
     size: 40,
     speed: 5,
     color: '#00ff00',
-    hitboxRadius: 4.5, // Small circle hitbox in center
-    hitboxOffsetY: 3, // Hitbox moved down 3 pixels
-    horizontalInput: 0 // Track horizontal input for banking effect
+    radius: 4.5, // Small circle hitbox in center
+    centerOffsetY: 3, // Hitbox moved down 3 pixels
+    horizontalInput: 0.0, // Track horizontal input for banking effect
+    collisionTimer: 0.0
 };
 
 // Star field for background
@@ -21,18 +19,22 @@ const starCount = 200;
 
 function initStars() {
     for (let i = 0; i < starCount; i++) {
+
+        const brightness = Math.random() * 155 + 100 // Brightness between 100 and 255 (grey to white)
+        const color = Math.floor(brightness);
         stars.push({
             x: Math.random() * canvas.width,
             y: Math.random() * canvas.height,
-            speed: Math.random() * 2 + 0.5, // Speed between 0.5 and 2.5
-            brightness: Math.random() * 155 + 100 // Brightness between 100 and 255 (grey to white)
+            speed: Math.random() + 0.5, // Speed between 0.5 and 1.5
+            brightness: brightness,
+            fillStyle: `rgb(${color}, ${color}, ${color})`
         });
     }
 }
 
 function updateStars() {
     for (let star of stars) {
-        star.y += star.speed;
+        star.y += star.speed * deltaTime;
 
         // Wrap around when star goes off screen
         if (star.y > canvas.height) {
@@ -42,25 +44,19 @@ function updateStars() {
     }
 }
 
-function drawStars() {
-    for (let star of stars) {
-        const color = Math.floor(star.brightness);
-        ctx.fillStyle = `rgb(${color}, ${color}, ${color})`;
-        ctx.fillRect(star.x, star.y, 1, 1);
-    }
-}
-
 // Game state
 let gameState = 'title'; // 'title', 'playing', or 'dying'
 let deathTimer = 0; // Timer for death delay (120 frames = 2 seconds at 60fps)
 let godMode = false; // Debug god mode
+let halfSpeedMode = false; // Debug half-speed mode (only works when god mode is enabled)
+
+// Delta time for frame-rate independent movement
+let lastTime = 0;
+let deltaTime = 1.0; // 1.0 at 60 FPS
 
 // Gamepad state
 let gamepad = null;
 let lastAttackButtonState = false;
-const chargeTime = 30; // 0.5 seconds at 60fps
-const burstInterval = 10; // ~0.17 seconds at 60fps
-let lastBurstTime = 0;
 let rapidFireDelay = 0; // Frames until next rapid fire shot
 let rapidFireTimer = 0; // Frames since last rapid fire shot
 
@@ -69,11 +65,12 @@ let score = 0;
 let highScore = parseInt(localStorage.getItem('vibeShooterHighScore')) || 0;
 let blueEnemiesDestroyed = 0;
 let asteroidsDestroyed = 0;
-let largeEnemySpawnCount = 0; // Track UFO spawns
-let ufoKills = 0; // Track UFO destructions for centipede spawning
+let sentinelSpawnCount = 0; // Track Sentinel spawns
+let sentinelKills = 0; // Track Sentinel destructions for centipede spawning
 
 // Bullets
 const bullets = [];
+const bulletPool = []; // Pool of reusable bullet objects
 let maxBullets = 3; // Start with 3 bullets, increase by destroying large enemies
 const bulletSpeed = 8;
 const bulletSize = 4;
@@ -84,26 +81,27 @@ const asteroidSpawnRate = 0.02; // Probability per frame
 const asteroidSpeed = { min: 1, max: 3 };
 const asteroidSize = { min: 20, max: 50 };
 
-// Enemies
-const enemies = [];
-const enemySpawnRate = 0.005; // Probability per frame
-const enemySize = 30;
-const enemySpeed = 2;
-const enemyPauseDuration = 120; // Frames to pause (2 seconds at 60fps)
-const enemyShootTiming = 20; // Shoot 20 frames before leaving
+// Beetles (blue enemies)
+const beetles = [];
+const beetleSpawnRate = 0.005; // Probability per frame
+const beetleSize = 30;
+const beetlePauseDuration = 120; // Frames to pause (2 seconds at 60fps)
 
 // Enemy bullets
 const enemyBullets = [];
+const enemyBulletPool = []; // Pool of reusable enemy bullet objects
 const enemyBulletSpeed = 4.5;
 
-// Large white enemies
-const largeEnemies = [];
-const largeEnemyWidth = 100;
-const largeEnemyHeight = 40;
-const largeEnemySpeed = 1;
+// Sentinels (large white enemies)
+const sentinels = [];
+const sentinelWidth = 100;
+const sentinelHeight = 40;
+const sentinelSpeed = 1;
 
 // Centipedes
 const centipedes = [];
+let centipedeSpawnQueue = 0; // Number of centipedes waiting to spawn
+let centipedeSpawnTimer = 0; // Timer until next centipede spawns (300 frames = 5 seconds)
 
 // Explosions
 const explosions = [];
@@ -113,6 +111,51 @@ const scorePopups = [];
 
 // Powerup text effects
 const powerupTexts = [];
+
+// Bullet pool helper functions
+function addPlayerBullet(x, y, width, height, color, vx, vy, isRainbow, rainbowHue) {
+    let bullet;
+    if (bulletPool.length > 0) {
+        bullet = bulletPool.pop();
+        bullet.x = x;
+        bullet.y = y;
+        bullet.width = width;
+        bullet.height = height;
+        bullet.color = color;
+        bullet.vx = vx;
+        bullet.vy = vy;
+        bullet.isRainbow = isRainbow;
+        bullet.rainbowHue = rainbowHue;
+    } else {
+        bullet = { x, y, width, height, color, vx, vy, isRainbow, rainbowHue };
+    }
+    bullets.push(bullet);
+}
+
+function returnPlayerBullet(bullet) {
+    bulletPool.push(bullet);
+}
+
+function addEnemyBullet(x, y, vx, vy, size, color, aimed) {
+    let bullet;
+    if (enemyBulletPool.length > 0) {
+        bullet = enemyBulletPool.pop();
+        bullet.x = x;
+        bullet.y = y;
+        bullet.vx = vx;
+        bullet.vy = vy;
+        bullet.size = size;
+        bullet.color = color;
+        bullet.aimed = aimed;
+    } else {
+        bullet = { x, y, vx, vy, size, color, aimed };
+    }
+    enemyBullets.push(bullet);
+}
+
+function returnEnemyBullet(bullet) {
+    enemyBulletPool.push(bullet);
+}
 
 // Keyboard state
 const keys = {
@@ -126,13 +169,11 @@ const keys = {
 // Gamepad connection events
 window.addEventListener('gamepadconnected', (e) => {
     gamepad = e.gamepad;
-    infoDiv.textContent = `Gamepad connected: ${gamepad.id}`;
     console.log('Gamepad connected:', gamepad);
 });
 
 window.addEventListener('gamepaddisconnected', (e) => {
     gamepad = null;
-    infoDiv.textContent = 'Gamepad disconnected. Please connect a gamepad/joystick.';
     console.log('Gamepad disconnected');
 });
 
@@ -146,6 +187,17 @@ window.addEventListener('keydown', (e) => {
         } else {
             console.log('God mode disabled');
         }
+    }
+
+    if ((e.key === 'c' || e.key === 'C') && godMode) {
+        // Trigger a centipede spawn event (add 2 to queue to test delay)
+        centipedeSpawnQueue += 2;
+        console.log('Centipede spawn event triggered - 2 centipedes queued');
+    }
+
+    if ((e.key === 'h' || e.key === 'H') && godMode) {
+        halfSpeedMode = !halfSpeedMode;
+        console.log(halfSpeedMode ? 'Half-speed mode enabled' : 'Half-speed mode disabled');
     }
 
     // Track arrow keys and space bar
@@ -168,6 +220,124 @@ window.addEventListener('keyup', (e) => {
         keys.Space = false;
     }
 });
+
+// ===== UTILITY FUNCTIONS =====
+
+// Fast O(1) array removal using swap-and-pop
+// Note: Does not preserve array order
+function removeAtSwap(array, index) {
+    array[index] = array[array.length - 1];
+    array.pop();
+}
+
+// Calculate distance between two points
+function getDistance(x1, y1, x2, y2) {
+    const dx = x1 - x2;
+    const dy = y1 - y2;
+    return Math.sqrt(dx * dx + dy * dy);
+}
+
+// Calculate squared distance between two points (faster, avoids sqrt)
+function getDistanceSquared(x1, y1, x2, y2) {
+    const dx = x1 - x2;
+    const dy = y1 - y2;
+    return dx * dx + dy * dy;
+}
+
+// Calculate angle from one point to another
+function getAngleTo(fromX, fromY, toX, toY) {
+    return Math.atan2(toY - fromY, toX - fromX);
+}
+
+// Update a timer value (decreases by deltaTime, floors at 0)
+function updateTimer(value, deltaTime) {
+    return value > 0 ? value - deltaTime : 0;
+}
+
+// Check if two rectangles are colliding (both centered at x,y)
+function checkRectCollision(x1, y1, w1, h1, x2, y2, w2, h2) {
+    return x1 + w1/2 > x2 - w2/2 &&
+           x1 - w1/2 < x2 + w2/2 &&
+           y1 + h1/2 > y2 - h2/2 &&
+           y1 - h1/2 < y2 + h2/2;
+}
+
+// Check collision between entity and ship hitbox
+function checkShipHitboxCollision(entityX, entityY, entityRadius) {
+    const hitboxY = ship.body.y + ship.centerOffsetY;
+    const radiusSum = ship.radius + entityRadius;
+    return getDistanceSquared(entityX, entityY, ship.body.x, hitboxY) < radiusSum * radiusSum;
+}
+
+// Spawn an aimed enemy bullet
+function spawnAimedBullet(fromX, fromY, toX, toY, speed) {
+    // Don't spawn bullets during dying state
+    if (gameState === 'dying') return;
+
+    const distance = getDistance(fromX, fromY, toX, toY);
+    const dx = toX - fromX;
+    const dy = toY - fromY;
+
+    addEnemyBullet(
+        fromX,
+        fromY,
+        (dx / distance) * speed,
+        (dy / distance) * speed,
+        6,
+        '#ff69b4',
+        true
+    );
+}
+
+// Spawn a random direction enemy bullet
+function spawnRandomBullet(x, y, speed) {
+    // Don't spawn bullets during dying state
+    if (gameState === 'dying') return;
+
+    const angle = Math.random() * Math.PI * 2;
+
+    addEnemyBullet(
+        x,
+        y,
+        Math.cos(angle) * speed,
+        Math.sin(angle) * speed,
+        6,
+        '#ff69b4',
+        false
+    );
+}
+
+// Apply velocity damping and speed limit to an entity
+function applyDampingAndSpeedLimit(body, dampingFactor, maxSpeed, deltaTime) {
+    body.vx *= dampingFactor;
+    body.vy *= dampingFactor;
+
+    const speed = Math.sqrt(body.vx * body.vx + body.vy * body.vy);
+    if (speed > maxSpeed) {
+        body,vx = (body.vx / speed) * maxSpeed;
+        body.vy = (body.vy / speed) * maxSpeed;
+    }
+}
+
+// Check if two points are within a certain distance (optimized with squared distance)
+function isWithinDistance(x1, y1, x2, y2, threshold) {
+    return getDistanceSquared(x1, y1, x2, y2) < threshold * threshold;
+}
+
+// Check if a body is offscreen and moving away (won't come back)
+function isBodyOffscreenAndMovingAway(body, margin) {
+    // Check if off left and moving left
+    if (body.x < -margin && body.vx < 0) return true;
+    // Check if off right and moving right
+    if (body.x > canvas.width + margin && body.vx > 0) return true;
+    // Check if off top and moving up
+    if (body.y < -margin && body.vy < 0) return true;
+    // Check if off bottom and moving down
+    if (body.y > canvas.height + margin && body.vy > 0) return true;
+    return false;
+}
+
+// ===== GAME FUNCTIONS =====
 
 // Get joystick input
 function getJoystickInput() {
@@ -206,7 +376,7 @@ function getJoystickInput() {
 }
 
 // Update ship position based on joystick input and keyboard
-function updateShip() {
+function handleMovementInputs() {
     const joystick = getJoystickInput();
 
     // Start with joystick input
@@ -220,15 +390,49 @@ function updateShip() {
     if (keys.ArrowDown) inputY = 1;
 
     // Store horizontal input for banking effect
-    ship.horizontalInput = inputX;
+    ship.horizontalInput += (inputX-ship.horizontalInput) * deltaTime * 0.3;
 
-    // Move ship based on input
-    ship.x += inputX * ship.speed;
-    ship.y += inputY * ship.speed;
+    // Apply velocity to physics body (direct control, not forces)
+    ship.body.vx = inputX * ship.speed;
+    ship.body.vy = inputY * ship.speed;
+}
 
+function updateShip() {
     // Keep ship within canvas bounds
-    ship.x = Math.max(ship.size / 2, Math.min(canvas.width - ship.size / 2, ship.x));
-    ship.y = Math.max(ship.size / 2, Math.min(canvas.height - ship.size / 2, ship.y));
+    if (ship.body.x < ship.size / 2) {
+        ship.body.x = ship.size / 2;
+        ship.body.vx = 0;
+    }
+    if (ship.body.x > canvas.width - ship.size / 2) {
+        ship.body.x = canvas.width - ship.size / 2;
+        ship.body.vx = 0;
+    }
+    if (ship.body.y < ship.size / 2) {
+        ship.body.y = ship.size / 2;
+        ship.body.vy = 0;
+    }
+    if (ship.body.y > canvas.height - ship.size / 2) {
+        ship.body.y = canvas.height - ship.size / 2;
+        ship.body.vy = 0;
+    }
+
+    ship.collisionTimer = Math.max(0, ship.collisionTimer - deltaTime / 60.0);
+
+    if (ship.body.lastHitImpulse > 0) {
+        if (ship.collisionTimer > 0.0 && ship.collisionTimer < 0.5) {
+            handlePlayerDeath();  
+        } else {
+            ship.collisionTimer = 1.0;
+        }
+    }
+}
+
+function calculateCurrentPlayerBulletCount() {
+    let result = 0;
+    for (let bullet of bullets) {
+        result += bullet.isRainbow ? 3 : 1;
+    }
+    return result;    
 }
 
 function handleShooting() {
@@ -256,12 +460,11 @@ function handleShooting() {
         // Button is being held
         if (!lastAttackButtonState) {
             // Just pressed - start hold timer and fire first shot immediately
-            lastBurstTime = 0;
             rapidFireTimer = 0;
-            rapidFireDelay = 20;
+            rapidFireDelay = 10;
             shootBurst(); // Fire first burst immediately
         } else {
-            rapidFireTimer++;
+            rapidFireTimer += deltaTime;
 
             // Rapid fire while holding (fire when timer reaches delay)
             if (rapidFireTimer >= rapidFireDelay) {
@@ -269,13 +472,14 @@ function handleShooting() {
                 rapidFireTimer = 0;
 
                 // Calculate new random delay for next shot
-                const baseDelay = Math.floor(Math.random() * 60) + 30; // 10-30
-                rapidFireDelay = Math.max(1, Math.floor(baseDelay / maxBullets));
+                const baseDelay = Math.floor(Math.random() * 20) + 20; // 10-30
+                const currentBulletCount = calculateCurrentPlayerBulletCount();
+
+                rapidFireDelay = Math.max(1, Math.floor((baseDelay * currentBulletCount) / (maxBullets * 10)));
             }
         }
     } else {
         // Reset timers
-        lastBurstTime = 0;
         rapidFireTimer = 0;
         rapidFireDelay = 0;
     }
@@ -285,10 +489,7 @@ function handleShooting() {
 
 function shootBullet() {
     // Calculate current bullet count (rainbow bullets count as 3)
-    let currentBulletCount = 0;
-    for (let bullet of bullets) {
-        currentBulletCount += bullet.isRainbow ? 3 : 1;
-    }
+    const currentBulletCount = calculateCurrentPlayerBulletCount();
 
     // Check if we have room for a bullet
     if (currentBulletCount >= maxBullets) return;
@@ -303,37 +504,35 @@ function shootBullet() {
     const angle = -Math.PI / 2 + randomAngle; // -PI/2 for straight up
 
     // Fire single bullet with spread
-    bullets.push({
-        x: ship.x,
-        y: ship.y - ship.size / 2,
-        width: bulletSize,
-        height: bulletSize * 2,
-        color: '#ffff00',
-        vx: Math.cos(angle) * bulletSpeed,
-        vy: Math.sin(angle) * bulletSpeed,
-        isRainbow: isRainbow,
-        rainbowHue: Math.random() * 360
-    });
+    addPlayerBullet(
+        ship.body.x,
+        ship.body.y - ship.size / 2,
+        bulletSize,
+        bulletSize * 3,
+        '#ffff00',
+        Math.cos(angle) * bulletSpeed,
+        Math.sin(angle) * bulletSpeed,
+        isRainbow,
+        Math.random() * 360
+    );
 }
 
 function shootBurst() {
-    const burstCountScale = 0.25;
+    const burstCountScale = 0.5;
 
     // Calculate burst count based on player power level
-    const burstCount = Math.max(1, Math.floor(Math.min(10, maxBullets * burstCountScale)) + 1);
+    let burstCount = Math.max(1, Math.floor(Math.min(10, Math.floor((maxBullets*burstCountScale)/2))) + 1);
 
     // Calculate current bullet count (rainbow bullets count as 3)
-    let currentBulletCount = 0;
-    for (let bullet of bullets) {
-        currentBulletCount += bullet.isRainbow ? 3 : 1;
-    }
+    const currentBulletCount = calculateCurrentPlayerBulletCount();
 
-    // Only shoot if we have room for all burst bullets
-    if (currentBulletCount + burstCount > maxBullets) return;
+    burstCount = Math.min(burstCount, maxBullets-currentBulletCount);
+    // Only shoot if we have room for some bullets
+    if (burstCount < 1) return;
 
-    const angleSpread = 10 * Math.PI / 180; // 10 degrees in radians
+    const angleSpread = 5 * Math.PI / 180; // 10 degrees in radians
     const speed = bulletSpeed;
-    const rainbowChance = Math.min((maxBullets-3)/2, 100);
+    const rainbowChance = Math.min((maxBullets-3), 100);
 
     // Center bullet at 0, with remaining bullets split evenly on both sides
     const angles = [0]; // Center bullet
@@ -349,17 +548,17 @@ function shootBurst() {
         // Determine if this is a rainbow bullet
         const isRainbow = Math.random() * 100 < rainbowChance;
 
-        bullets.push({
-            x: ship.x,
-            y: ship.y - ship.size / 2,
-            width: bulletSize,
-            height: bulletSize * 2,
-            color: '#ffff00',
-            vx: Math.cos(angle) * speed,
-            vy: Math.sin(angle) * speed,
-            isRainbow: isRainbow,
-            rainbowHue: Math.random() * 360
-        });
+        addPlayerBullet(
+            ship.body.x,
+            ship.body.y - ship.size / 2,
+            bulletSize * 3,
+            bulletSize,
+            '#ffff00',
+            Math.cos(angle) * speed,
+            Math.sin(angle) * speed,
+            isRainbow,
+            Math.random() * 360
+        );
     }
 }
 
@@ -369,17 +568,31 @@ function updateBullets() {
 
         // Update position based on velocity (for burst shots) or default upward movement
         if (bullet.vx !== undefined && bullet.vy !== undefined) {
-            bullet.x += bullet.vx;
-            bullet.y += bullet.vy;
+            bullet.x += bullet.vx * deltaTime;
+            bullet.y += bullet.vy * deltaTime;
         } else {
-            bullet.y -= bulletSpeed;
+            bullet.y -= bulletSpeed * deltaTime;
         }
 
         // Remove bullets that go off screen
         if (bullet.y < -bullet.height || bullet.x < -50 || bullet.x > canvas.width + 50) {
-            bullets.splice(i, 1);
+            returnPlayerBullet(bullet);
+            removeAtSwap(bullets, i);
         }
     }
+}
+
+function checkBulletCollision(bullet, x, y, radius) {
+    const dx = bullet.x - x;
+    const dy = bullet.y - y;
+    const distanceSquared = dx * dx + dy * dy;
+
+    const check_radius = (radius+bullet.width)/2;
+    return distanceSquared < check_radius*check_radius;
+}
+
+function getBulletDamage(bullet) {
+    return bullet.isRainbow ? 4 : 1;
 }
 
 function checkBulletAsteroidCollisions() {
@@ -389,29 +602,27 @@ function checkBulletAsteroidCollisions() {
         for (let j = asteroids.length - 1; j >= 0; j--) {
             const asteroid = asteroids[j];
 
-            // Simple circle collision detection
-            const dx = bullet.x - asteroid.x;
-            const dy = bullet.y - asteroid.y;
-            const distance = Math.sqrt(dx * dx + dy * dy);
-
-            if (distance < asteroid.size / 2) {
+            if (checkBulletCollision(bullet, asteroid.body.x, asteroid.body.y, asteroid.body.radius + 1)) {
                 // Collision detected
-                bullets.splice(i, 1);
+                returnPlayerBullet(bullet);
+                removeAtSwap(bullets, i);
 
-                // Rainbow bullets do 3 damage, normal bullets do 1
-                const damage = bullet.isRainbow ? 3 : 1;
-                asteroid.health -= damage;
+                asteroid.health -= getBulletDamage(bullet);
                 asteroid.hitFlash = 5; // Flash for 5 frames
+
+                // Apply impulse based on bullet velocity and damage
+                if (bullet.vx !== undefined && bullet.vy !== undefined) {
+                    // Bullet has velocity - use it for impulse direction
+                    Physics.applyImpulse(asteroid.body, bullet.vx, bullet.vy, 1);
+                }
 
                 if (asteroid.health <= 0) {
                     // Asteroid destroyed - spawn explosion, score popup, shoot bullet and remove
-                    spawnExplosion(asteroid.x, asteroid.y, asteroid.size);
-                    if (!godMode) {
-                        spawnScorePopup(asteroid.x, asteroid.y, 1);
-                        score += 1; // Award 1 point for asteroid
-                    }
+                    spawnExplosion(asteroid.body.x, asteroid.body.y, asteroid.size);
+                    addScore(asteroid.body.x, asteroid.body.y, 1);
                     shootAsteroidBullet(asteroid);
-                    asteroids.splice(j, 1);
+                    asteroid.body.destroy = true;
+                    removeAtSwap(asteroids, j);
                     asteroidsDestroyed++;
                 }
                 break; // Move to next bullet
@@ -427,104 +638,82 @@ function shootAsteroidBullet(asteroid) {
     // No bullets for 1 HP asteroids
     if (bulletCount < 1) return;
 
+    // Don't fire if within 100 pixels of player
+    if (isWithinDistance(asteroid.body.x, asteroid.body.y, ship.body.x, ship.body.y, 100)) return;
+
     for (let i = 0; i < bulletCount; i++) {
         // Always fire in random direction
-        const angle = Math.random() * Math.PI * 2;
-        const vx = Math.cos(angle) * enemyBulletSpeed;
-        const vy = Math.sin(angle) * enemyBulletSpeed;
-
-        enemyBullets.push({
-            x: asteroid.x,
-            y: asteroid.y,
-            vx: vx,
-            vy: vy,
-            size: 6,
-            color: '#ff69b4', // Pink color
-            aimed: false // Never aimed
-        });
+        spawnRandomBullet(asteroid.body.x, asteroid.body.y, enemyBulletSpeed);
     }
 }
 
-function checkBulletEnemyCollisions() {
+function checkBulletBeetleCollisions() {
     for (let i = bullets.length - 1; i >= 0; i--) {
         const bullet = bullets[i];
 
-        for (let j = enemies.length - 1; j >= 0; j--) {
-            const enemy = enemies[j];
+        for (let j = beetles.length - 1; j >= 0; j--) {
+            const beetle = beetles[j];
 
-            // Rectangle collision detection
-            const bulletLeft = bullet.x - bullet.width / 2;
-            const bulletRight = bullet.x + bullet.width / 2;
-            const bulletTop = bullet.y;
-            const bulletBottom = bullet.y + bullet.height;
-
-            const enemyLeft = enemy.x - enemy.size / 2;
-            const enemyRight = enemy.x + enemy.size / 2;
-            const enemyTop = enemy.y - enemy.size / 2;
-            const enemyBottom = enemy.y + enemy.size / 2;
-
-            if (bulletRight > enemyLeft && bulletLeft < enemyRight &&
-                bulletBottom > enemyTop && bulletTop < enemyBottom) {
+            // Circle collision detection (30% larger radius)
+            if (checkBulletCollision(bullet, beetle.body.x, beetle.body.y, beetle.body.radius * 1.3)) {
                 // Collision detected
-                bullets.splice(i, 1);
+                returnPlayerBullet(bullet);
+                removeAtSwap(bullets, i);
 
-                // Rainbow bullets do 3 damage, normal bullets do 1
-                const damage = bullet.isRainbow ? 3 : 1;
-                enemy.health -= damage;
-                enemy.hitFlash = 5; // Flash for 5 frames
-                enemy.stunTimer = 15; // Pause for 250ms (15 frames at 60fps)
+                beetle.health -= getBulletDamage(bullet);
+                beetle.hitFlash = 5; // Flash for 5 frames
+                beetle.stunTimer = 15; // Pause for 250ms (15 frames at 60fps)
 
-                if (enemy.health <= 0) {
-                    // Enemy destroyed - spawn explosion and score popup
-                    spawnExplosion(enemy.x, enemy.y, enemy.size);
-                    if (!godMode) {
-                        spawnScorePopup(enemy.x, enemy.y, 2);
-                        score += 2; // Award 2 points for enemy
+                // Apply impulse based on bullet velocity and damage
+                if (bullet.vx !== undefined && bullet.vy !== undefined) {
+                    // Bullet has velocity - use it for impulse direction
+                    Physics.applyImpulse(beetle.body, bullet.vx, bullet.vy, 1);
+                }
+
+                if (beetle.health <= 0) {
+                    // Beetle destroyed - spawn explosion and score popup
+                    spawnExplosion(beetle.body.x, beetle.body.y, beetle.size);
+                    addScore(beetle.body.x, beetle.body.y, 2);
+
+                    // Shoot aimed bullets on death (only if far enough from player)
+                    if (!isWithinDistance(beetle.body.x, beetle.body.y, ship.body.x, ship.body.y, 200)) {
+                        const bulletCount = Math.floor(maxBullets * 0.1);
+                        for (let k = 0; k < bulletCount; k++) {
+                            // Add random spread of ±5 degrees
+                            const baseAngle = getAngleTo(beetle.body.x, beetle.body.y, ship.body.x, ship.body.y);
+                            const spread = (Math.random() - 0.5) * (10 * Math.PI / 180); // ±5 degrees
+                            const angle = baseAngle + spread;
+
+                            // Randomize speed by ±20%
+                            const speedMultiplier = 0.8 + Math.random() * 0.4; // 0.8 to 1.2
+                            const speed = enemyBulletSpeed * 1.5 * speedMultiplier;
+
+                            addEnemyBullet(
+                                beetle.body.x,
+                                beetle.body.y,
+                                Math.cos(angle) * speed,
+                                Math.sin(angle) * speed,
+                                6,
+                                '#ff69b4',
+                                true
+                            );
+                        }
                     }
 
-                    // Shoot aimed bullets on death
-                    const bulletCount = Math.floor(maxBullets * 0.1);
-                    for (let k = 0; k < bulletCount; k++) {
-                        // Aim at player with slight random variation
-                        const dx = ship.x - enemy.x;
-                        const dy = ship.y - enemy.y;
-                        const distance = Math.sqrt(dx * dx + dy * dy);
-
-                        // Add random spread of ±5 degrees
-                        const baseAngle = Math.atan2(dy, dx);
-                        const spread = (Math.random() - 0.5) * (10 * Math.PI / 180); // ±5 degrees
-                        const angle = baseAngle + spread;
-
-                        // Randomize speed by ±20%
-                        const speedMultiplier = 0.8 + Math.random() * 0.4; // 0.8 to 1.2
-                        const speed = enemyBulletSpeed * 1.5 * speedMultiplier;
-                        const vx = Math.cos(angle) * speed;
-                        const vy = Math.sin(angle) * speed;
-
-                        enemyBullets.push({
-                            x: enemy.x,
-                            y: enemy.y,
-                            vx: vx,
-                            vy: vy,
-                            size: 6,
-                            color: '#ff69b4',
-                            aimed: true
-                        });
-                    }
-
-                    enemies.splice(j, 1);
+                    beetle.body.destroy = true;
+                    removeAtSwap(beetles, j);
                     blueEnemiesDestroyed++;
 
-                    // Spawn large enemy every 5 blue enemies destroyed
+                    // Spawn sentinel every 5 blue enemies destroyed
                     if (blueEnemiesDestroyed >= 5) {
-                        largeEnemySpawnCount++;
+                        sentinelSpawnCount++;
 
-                        // Every 4th spawn, spawn two UFOs
-                        if (largeEnemySpawnCount % 4 === 0) {
-                            spawnLargeEnemy();
-                            spawnLargeEnemy(true); // Second UFO, higher position
+                        // Every 4th spawn, spawn two sentinels
+                        if (sentinelSpawnCount % 4 === 0) {
+                            spawnSentinel();
+                            spawnSentinel(150); // Second sentinel, higher position
                         } else {
-                            spawnLargeEnemy();
+                            spawnSentinel();
                         }
 
                         blueEnemiesDestroyed = 0;
@@ -536,56 +725,42 @@ function checkBulletEnemyCollisions() {
     }
 }
 
-function checkBulletLargeEnemyCollisions() {
+function checkBulletSentinelCollisions() {
     for (let i = bullets.length - 1; i >= 0; i--) {
         const bullet = bullets[i];
 
-        for (let j = largeEnemies.length - 1; j >= 0; j--) {
-            const enemy = largeEnemies[j];
+        for (let j = sentinels.length - 1; j >= 0; j--) {
+            const enemy = sentinels[j];
 
-            // Rectangle collision detection
-            const bulletLeft = bullet.x - bullet.width / 2;
-            const bulletRight = bullet.x + bullet.width / 2;
-            const bulletTop = bullet.y;
-            const bulletBottom = bullet.y + bullet.height;
-
-            const enemyLeft = enemy.x - enemy.width / 2;
-            const enemyRight = enemy.x + enemy.width / 2;
-            const enemyTop = enemy.y - enemy.height / 2;
-            const enemyBottom = enemy.y + enemy.height / 2;
-
-            if (bulletRight > enemyLeft && bulletLeft < enemyRight &&
-                bulletBottom > enemyTop && bulletTop < enemyBottom) {
+            // Circle collision detection (30% larger radius)
+            if (checkBulletCollision(bullet, enemy.body.x, enemy.body.y, enemy.body.radius * 1.3)) {
                 // Collision detected
-                bullets.splice(i, 1);
+                returnPlayerBullet(bullet);
+                removeAtSwap(bullets, i);
 
-                // Rainbow bullets do 3 damage, normal bullets do 1
-                const damage = bullet.isRainbow ? 3 : 1;
-                enemy.health -= damage;
+                enemy.health -= getBulletDamage(bullet);
                 enemy.hitFlash = 5; // Flash for 5 frames
 
                 if (enemy.health <= 0) {
-                    // Large enemy destroyed - spawn explosion, score popup, and powerup text
-                    spawnExplosion(enemy.x, enemy.y, Math.max(enemy.width, enemy.height));
-                    if (!godMode) {
-                        spawnScorePopup(enemy.x, enemy.y, 10);
-                        score += 10; // Award 10 points for large enemy
+                    // Sentinel destroyed - spawn explosion, score popup, and powerup text
+                    spawnExplosion(enemy.body.x, enemy.body.y, Math.max(enemy.width, enemy.height));
+                    addScore(enemy.body.x, enemy.body.y, 10);
+                    spawnPowerupText(enemy.body.x, enemy.body.y + 20);
+
+                    // Shoot final burst on death (only if far enough from player)
+                    if (!isWithinDistance(enemy.body.x, enemy.body.y, ship.body.x, ship.body.y, 200)) {
+                        shootSentinelBullets(enemy);
                     }
-                    spawnPowerupText(enemy.x, enemy.y + 20);
 
-                    // Shoot final burst on death
-                    shootLargeEnemyBullets(enemy);
-
-                    largeEnemies.splice(j, 1);
+                    enemy.body.destroy = true;
+                    removeAtSwap(sentinels, j);
                     maxBullets += 3; // Increase bullet limit by 3
 
-                    // Track UFO kills and spawn centipedes every 6 kills
-                    ufoKills++;
-                    if (ufoKills % 6 === 0) {
-                        const centipedesToSpawn = Math.floor(ufoKills / 6);
-                        for (let k = 0; k < centipedesToSpawn; k++) {
-                            spawnCentipede();
-                        }
+                    // Track Sentinel kills and queue centipedes every 6 kills
+                    sentinelKills++;
+                    if (sentinelKills % 6 === 0) {
+                        const centipedesToSpawn = Math.floor(sentinelKills / 6);
+                        centipedeSpawnQueue += centipedesToSpawn;
                     }
                 }
                 break; // Move to next bullet
@@ -603,27 +778,36 @@ function checkBulletCentipedeCollisions() {
             for (let segment of centipede.segments) {
                 if (segment.health <= 0) continue; // Skip destroyed segments
 
-                // Circle collision detection
-                const dx = bullet.x - segment.x;
-                const dy = bullet.y - segment.y;
-                const distance = Math.sqrt(dx * dx + dy * dy);
-
-                if (distance < segment.size / 2 + bullet.width / 2) {
+                if (checkBulletCollision(bullet, segment.x, segment.y, segment.size/2)) {
                     // Collision detected
-                    bullets.splice(i, 1);
+                    returnPlayerBullet(bullet);
+                    removeAtSwap(bullets, i);
                     bulletHit = true;
 
-                    // Rainbow bullets do 3 damage, normal bullets do 1
-                    const damage = bullet.isRainbow ? 3 : 1;
-                    segment.health -= damage;
+                    segment.health -= getBulletDamage(bullet);
                     segment.hitFlash = 5; // Flash for 5 frames
 
                     if (segment.health <= 0) {
                         // Segment destroyed - spawn explosion and score
                         spawnExplosion(segment.x, segment.y, segment.size);
-                        if (!godMode) {
-                            spawnScorePopup(segment.x, segment.y, 3);
-                            score += 3; // Award 3 points per segment
+                        addScore(segment.x, segment.y, 3);
+
+                        // Shoot 8 pink bullets in a circle
+                        const bulletCount = 8;
+                        for (let k = 0; k < bulletCount; k++) {
+                            const angle = (k / bulletCount) * Math.PI * 2;
+                            const vx = Math.cos(angle) * enemyBulletSpeed;
+                            const vy = Math.sin(angle) * enemyBulletSpeed;
+
+                            addEnemyBullet(
+                                segment.x,
+                                segment.y,
+                                vx,
+                                vy,
+                                6,
+                                '#ff69b4',
+                                false
+                            );
                         }
                     }
                     break;
@@ -647,7 +831,7 @@ function handlePlayerDeath() {
     }
 
     // Spawn explosion at player position
-    spawnExplosion(ship.x, ship.y, ship.size * 1.5);
+    spawnExplosion(ship.body.x, ship.body.y, ship.size * 1.5);
 
     // Set dying state and start death timer (2 seconds = 120 frames at 60fps)
     gameState = 'dying';
@@ -662,116 +846,52 @@ function resetGame() {
     score = 0;
     blueEnemiesDestroyed = 0;
     asteroidsDestroyed = 0;
-    largeEnemySpawnCount = 0;
-    ufoKills = 0;
+    sentinelSpawnCount = 0;
+    sentinelKills = 0;
     rapidFireTimer = 0;
     rapidFireDelay = 0;
+    centipedeSpawnQueue = 0;
+    centipedeSpawnTimer = 0;
 
     // Reset power level to starting value
     maxBullets = 3;
 
+    // Return all bullets to pools before clearing
+    for (let bullet of bullets) {
+        returnPlayerBullet(bullet);
+    }
+    for (let bullet of enemyBullets) {
+        returnEnemyBullet(bullet);
+    }
+
     // Clear all game objects
     bullets.length = 0;
     asteroids.length = 0;
-    enemies.length = 0;
-    largeEnemies.length = 0;
+    beetles.length = 0;
+    sentinels.length = 0;
     centipedes.length = 0;
     enemyBullets.length = 0;
     explosions.length = 0;
     scorePopups.length = 0;
     powerupTexts.length = 0;
 
-    // Reset ship position
-    ship.x = canvas.width / 2;
-    ship.y = canvas.height - 250;
+    // Reset physics system (clears all bodies and returns them to pool)
+    Physics.resetAll();
+
+    // Recreate ship physics body after reset
+    ship.body = Physics.addCollisionBody(canvas.width / 2, canvas.height - 250, 4.5, 0, 0, 0.2);
+    ship.horizontalInput = 0;
 }
 
 function checkEnemyBulletPlayerCollisions() {
     for (let i = enemyBullets.length - 1; i >= 0; i--) {
         const bullet = enemyBullets[i];
 
-        // Circle collision detection with player hitbox
-        const hitboxY = ship.y + ship.hitboxOffsetY;
-        const dx = bullet.x - ship.x;
-        const dy = bullet.y - hitboxY;
-        const distance = Math.sqrt(dx * dx + dy * dy);
-
-        if (distance < ship.hitboxRadius + bullet.size / 2) {
+        if (checkShipHitboxCollision(bullet.x, bullet.y, bullet.size / 2)) {
             // Player hit - return to title screen
             handlePlayerDeath();
             return;
         }
-    }
-}
-
-function checkEnemyPlayerCollisions() {
-    // Check blue enemies
-    for (let i = enemies.length - 1; i >= 0; i--) {
-        const enemy = enemies[i];
-
-        // Circle collision detection with player hitbox
-        const hitboxY = ship.y + ship.hitboxOffsetY;
-        const dx = enemy.x - ship.x;
-        const dy = enemy.y - hitboxY;
-        const distance = Math.sqrt(dx * dx + dy * dy);
-
-        if (distance < ship.hitboxRadius + enemy.size / 2) {
-            // Player hit - return to title screen
-            handlePlayerDeath();
-            return;
-        }
-    }
-}
-
-function checkLargeEnemyPlayerCollisions() {
-    for (let i = largeEnemies.length - 1; i >= 0; i--) {
-        const enemy = largeEnemies[i];
-
-        // Rectangle-circle collision detection
-        const hitboxY = ship.y + ship.hitboxOffsetY;
-        const closestX = Math.max(enemy.x - enemy.width / 2, Math.min(ship.x, enemy.x + enemy.width / 2));
-        const closestY = Math.max(enemy.y - enemy.height / 2, Math.min(hitboxY, enemy.y + enemy.height / 2));
-
-        const dx = ship.x - closestX;
-        const dy = hitboxY - closestY;
-        const distance = Math.sqrt(dx * dx + dy * dy);
-
-        if (distance < ship.hitboxRadius) {
-            // Player hit - return to title screen
-            handlePlayerDeath();
-            return;
-        }
-    }
-}
-
-function checkAsteroidPlayerCollisions() {
-    for (let i = asteroids.length - 1; i >= 0; i--) {
-        const asteroid = asteroids[i];
-
-        // Circle collision detection with player hitbox
-        const hitboxY = ship.y + ship.hitboxOffsetY;
-        const dx = asteroid.x - ship.x;
-        const dy = asteroid.y - hitboxY;
-        const distance = Math.sqrt(dx * dx + dy * dy);
-
-        if (distance < ship.hitboxRadius + asteroid.size / 2) {
-            // Player hit - return to title screen
-            handlePlayerDeath();
-            return;
-        }
-    }
-}
-
-function drawBullets() {
-    for (let bullet of bullets) {
-        if (bullet.isRainbow) {
-            // Cycle through rainbow colors
-            bullet.rainbowHue = (bullet.rainbowHue + 5) % 360;
-            ctx.fillStyle = `hsl(${bullet.rainbowHue}, 100%, 50%)`;
-        } else {
-            ctx.fillStyle = bullet.color;
-        }
-        ctx.fillRect(bullet.x - bullet.width / 2, bullet.y, bullet.width, bullet.height);
     }
 }
 
@@ -795,13 +915,20 @@ function spawnAsteroid() {
         });
     }
 
+    // Spawn at least 'size' distance from left and right edges
+    const x = Math.random() * (canvas.width - size * 2) + size;
+    const y = -size;
+    // Calculate mass based on size: 1-3 (size ranges from 20-50)
+    const mass = Math.min(3, Math.max(1, Math.round((size - 20) / 10) + 1));
+    const body = Physics.addCollisionBody(x, y, size / 2, 0, speed, mass);
+
     asteroids.push({
-        x: Math.random() * canvas.width,
-        y: -size,
+        body: body,
         size: size,
-        speed: speed,
         rotation: Math.random() * Math.PI * 2,
-        rotationSpeed: (Math.random() - 0.5) * 0.03, // 3x faster rotation
+        rotationSpeed: (Math.random() - 0.5) * 0.04,
+        rotationAxisX: Math.random() * Math.PI,
+        rotationAxisY: Math.random() * Math.PI,
         health: health,
         maxHealth: health,
         hitFlash: 0,
@@ -811,7 +938,7 @@ function spawnAsteroid() {
 
 function updateAsteroids() {
     // Randomly spawn new asteroids
-    if (Math.random() < asteroidSpawnRate) {
+    if (Math.random() < asteroidSpawnRate * deltaTime) {
         spawnAsteroid();
     }
 
@@ -820,336 +947,321 @@ function updateAsteroids() {
         const asteroid = asteroids[i];
 
         // Update hit flash timer
-        if (asteroid.hitFlash > 0) {
-            asteroid.hitFlash--;
-        }
+        asteroid.hitFlash = updateTimer(asteroid.hitFlash, deltaTime);
 
-        asteroid.y += asteroid.speed;
-        asteroid.rotation += asteroid.rotationSpeed;
+        asteroid.rotation += asteroid.rotationSpeed * deltaTime;
 
-        // Remove asteroids that go off screen
-        if (asteroid.y > canvas.height + asteroid.size) {
-            asteroids.splice(i, 1);
+        // Remove asteroids that go off screen and are moving away
+        if (isBodyOffscreenAndMovingAway(asteroid.body, asteroid.size)) {
+            asteroid.body.destroy = true;
+            removeAtSwap(asteroids, i);
         }
     }
 }
 
-function drawAsteroids() {
-    for (let asteroid of asteroids) {
-        ctx.save();
-        ctx.translate(asteroid.x, asteroid.y);
-        ctx.rotate(asteroid.rotation);
+function isBeetleStartPositionValid(x, y, minDistance) {
+    // Check if start position is too close to any existing beetle's body position
+    for (let beetle of beetles) {
+        const distToCurrent = getDistanceSquared(x, y, beetle.body.x, beetle.body.y);
+        if (distToCurrent < minDistance * minDistance) {
+            return false;
+        }
+    }
+    return true;
+}
 
-        // Calculate color based on current health (grey to red)
-        const colorHealth = Math.min(asteroid.health, 10);
-        const ratio = (colorHealth - 1) / 9; // 0 at 1 HP, 1 at 10 HP
-        const r = Math.floor(136 + 119 * ratio); // 136 to 255
+function isBeetleTargetPositionValid(x, y, minDistance) {
+    // Check if target position is too close to any existing beetle's target position
+    for (let beetle of beetles) {
+        const distToTarget = getDistanceSquared(x, y, beetle.targetX, beetle.targetY);
+        if (distToTarget < minDistance * minDistance) {
+            return false;
+        }
+    }
+    return true;
+}
+
+function spawnBeetle() {
+    const minDistance = beetleSize * 2;
+    const maxAttempts = 10;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        // Random start position from top
+        const startX = Math.random() * canvas.width;
+        const startY = -beetleSize;
+
+        // Determine which side of screen and keep target on same side
+        const isLeftSide = startX < canvas.width / 2;
+        let targetX;
+        if (isLeftSide) {
+            // Left side: target between 100 and middle
+            targetX = Math.random() * (canvas.width / 2 - 100) + 100;
+        } else {
+            // Right side: target between middle and width - 100
+            targetX = Math.random() * (canvas.width / 2 - 100) + canvas.width / 2;
+        }
+        const targetY = Math.random() * 200 + 100; // Mid screen area
+
+        // Validate positions before spawning
+        if (!isBeetleStartPositionValid(startX, startY, minDistance) ||
+            !isBeetleTargetPositionValid(targetX, targetY, minDistance)) {
+            continue; // Try again with new positions
+        }
+
+        // Exit towards the same side they entered from
+        const exitX = isLeftSide ? -beetleSize : canvas.width + beetleSize;
+        const exitY = targetY + (Math.random() * 100 - 50); // Exit near same Y
+
+        // Calculate health: base 2 HP + 1 per 12 power levels
+        const extraHP = Math.floor(maxBullets / 12);
+        const health = 2 + extraHP;
+
+        // Calculate color based on extra HP (blue to purple, capped at 5 extra HP)
+        const colorExtraHP = Math.min(extraHP, 5);
+        const ratio = colorExtraHP / 5; // 0 at base, 1 at 5 extra HP
+        const r = Math.floor(136 * ratio); // 0 to 136
         const g = Math.floor(136 * (1 - ratio)); // 136 to 0
-        const b = Math.floor(136 * (1 - ratio)); // 136 to 0
+        const b = 255; // Always 255
         const color = `rgb(${r}, ${g}, ${b})`;
 
-        // Draw asteroid as irregular polygon using stored vertices
-        // Flash white when hit
-        ctx.fillStyle = asteroid.hitFlash > 0 ? '#ffffff' : color;
-        ctx.beginPath();
-        for (let i = 0; i < asteroid.vertices.length; i++) {
-            const vertex = asteroid.vertices[i];
-            if (i === 0) {
-                ctx.moveTo(vertex.x, vertex.y);
-            } else {
-                ctx.lineTo(vertex.x, vertex.y);
-            }
-        }
-        ctx.closePath();
-        ctx.fill();
+        const mass = 1; // Beetles have mass of 1
+        const body = Physics.addCollisionBody(startX, startY, beetleSize, 0, 0, mass);
 
-        ctx.restore();
+        beetles.push({
+            body: body,
+            size: beetleSize,
+            color: color,
+            baseColor: color,
+            state: 'entering', // entering, pausing, shooting, exiting
+            targetX: targetX,
+            targetY: targetY,
+            exitX: exitX,
+            exitY: exitY,
+            pauseTimer: 0,
+            hasShot: false,
+            health: health,
+            hitFlash: 0,
+            stunTimer: 0,
+            shootingBulletsRemaining: 0,
+            shootingTimer: 0,
+            wingFlapTimer: Math.random() * Math.PI * 2, // Random starting phase
+            rotation: 0, // Current rotation in radians
+            rotationVelocity: 0,
+            targetRotation: 0 // Target rotation based on velocity
+        });
+        return; // Successfully spawned
     }
+    // If we get here, we failed to find a valid position after maxAttempts
+    // Just skip spawning this beetle
 }
 
-function spawnEnemy() {
-    // Random start position from top
-    const startX = Math.random() * canvas.width;
-    const startY = -enemySize;
-
-    // Determine which side of screen and keep target on same side
-    const isLeftSide = startX < canvas.width / 2;
-    let targetX;
-    if (isLeftSide) {
-        // Left side: target between 100 and middle
-        targetX = Math.random() * (canvas.width / 2 - 100) + 100;
-    } else {
-        // Right side: target between middle and width - 100
-        targetX = Math.random() * (canvas.width / 2 - 100) + canvas.width / 2;
-    }
-    const targetY = Math.random() * 200 + 100; // Mid screen area
-
-    // Exit towards the same side they entered from
-    const exitX = isLeftSide ? -enemySize : canvas.width + enemySize;
-    const exitY = targetY + (Math.random() * 100 - 50); // Exit near same Y
-
-    // Calculate health: base 2 HP + 1 per 12 power levels
-    const extraHP = Math.floor(maxBullets / 12);
-    const health = 2 + extraHP;
-
-    // Calculate color based on extra HP (blue to purple, capped at 5 extra HP)
-    const colorExtraHP = Math.min(extraHP, 5);
-    const ratio = colorExtraHP / 5; // 0 at base, 1 at 5 extra HP
-    const r = Math.floor(136 * ratio); // 0 to 136
-    const g = Math.floor(136 * (1 - ratio)); // 136 to 0
-    const b = 255; // Always 255
-    const color = `rgb(${r}, ${g}, ${b})`;
-
-    enemies.push({
-        x: startX,
-        y: startY,
-        vx: 0,
-        vy: 0,
-        size: enemySize,
-        color: color,
-        baseColor: color,
-        state: 'entering', // entering, pausing, shooting, exiting
-        targetX: targetX,
-        targetY: targetY,
-        exitX: exitX,
-        exitY: exitY,
-        pauseTimer: 0,
-        hasShot: false,
-        health: health,
-        hitFlash: 0,
-        stunTimer: 0,
-        shootingBulletsRemaining: 0,
-        shootingTimer: 0
-    });
-}
-
-function updateEnemies() {
+function updateBeetles() {
     // Calculate spawn rate multiplier based on asteroids destroyed
     // Every 10 asteroids increases spawn rate by 5%
     const spawnRateMultiplier = 1 + (Math.floor(asteroidsDestroyed / 10) * 0.05);
-    const adjustedSpawnRate = enemySpawnRate * spawnRateMultiplier;
+    const adjustedSpawnRate = beetleSpawnRate * spawnRateMultiplier * deltaTime;
 
-    // Randomly spawn new enemies
+    // Randomly spawn new beetles
     if (Math.random() < adjustedSpawnRate) {
-        spawnEnemy();
+        spawnBeetle();
     }
 
-    const acceleration = 0.15;
-    const damping = 0.95;
+    const acceleration = 0.1;
+    const movementDampingFactor = Math.pow(0.97, deltaTime);
+    const stillDampingFactor = Math.pow(0.9, deltaTime);
     // Increase speed by 10% for every 5 power levels
     const baseMaxSpeed = 6; // 50% faster than original 4
     const maxSpeed = baseMaxSpeed * (1 + Math.floor(maxBullets / 5) * 0.1);
     const arrivalThreshold = 20;
 
-    // Update existing enemies
-    for (let i = enemies.length - 1; i >= 0; i--) {
-        const enemy = enemies[i];
+    // Update existing beetles
+    for (let i = beetles.length - 1; i >= 0; i--) {
+        const beetle = beetles[i];
 
         // Update hit flash timer
-        if (enemy.hitFlash > 0) {
-            enemy.hitFlash--;
-        }
+        beetle.hitFlash = updateTimer(beetle.hitFlash, deltaTime);
+
+        // Update wing flap timer
+        beetle.wingFlapTimer += deltaTime * 0.15; // Speed of flapping
 
         // Update stun timer
-        if (enemy.stunTimer > 0) {
-            enemy.stunTimer--;
+        beetle.stunTimer = updateTimer(beetle.stunTimer, deltaTime);
+        if (beetle.stunTimer > 0) {
             continue; // Skip movement while stunned
         }
 
-        if (enemy.state === 'entering') {
+        if (beetle.state === 'entering') {
             // Calculate acceleration toward target
-            const dx = enemy.targetX - enemy.x;
-            const dy = enemy.targetY - enemy.y;
-            const distance = Math.sqrt(dx * dx + dy * dy);
+            const dx = beetle.targetX - beetle.body.x;
+            const dy = beetle.targetY - beetle.body.y;
+            const distanceSquared = getDistanceSquared(beetle.body.x, beetle.body.y, beetle.targetX, beetle.targetY);
 
-            if (distance < arrivalThreshold) {
+            if (distanceSquared < arrivalThreshold * arrivalThreshold) {
                 // Reached target - gradually slow down
-                enemy.vx *= 0.9;
-                enemy.vy *= 0.9;
+                const slowdownDamping = Math.pow(0.9, deltaTime);
+                beetle.body.vx *= slowdownDamping;
+                beetle.body.vy *= slowdownDamping;
 
-                if (Math.abs(enemy.vx) < 0.1 && Math.abs(enemy.vy) < 0.1) {
-                    enemy.vx = 0;
-                    enemy.vy = 0;
-                    enemy.x = enemy.targetX;
-                    enemy.y = enemy.targetY;
-                    enemy.state = 'pausing';
-                    enemy.pauseTimer = enemyPauseDuration;
+                if (Math.abs(beetle.body.vx) < 0.1 && Math.abs(beetle.body.vy) < 0.1) {
+                    beetle.state = 'pausing';
+                    beetle.pauseTimer = beetlePauseDuration;
                 }
             } else {
-                // Apply acceleration toward target
+                // Apply acceleration toward target (need actual distance for normalization)
+                const distance = Math.sqrt(distanceSquared);
                 const ax = (dx / distance) * acceleration;
                 const ay = (dy / distance) * acceleration;
 
-                enemy.vx += ax;
-                enemy.vy += ay;
+                beetle.body.vx += ax * deltaTime;
+                beetle.body.vy += ay * deltaTime;
             }
 
             // Apply damping and limit max speed
-            enemy.vx *= damping;
-            enemy.vy *= damping;
-            const speed = Math.sqrt(enemy.vx * enemy.vx + enemy.vy * enemy.vy);
-            if (speed > maxSpeed) {
-                enemy.vx = (enemy.vx / speed) * maxSpeed;
-                enemy.vy = (enemy.vy / speed) * maxSpeed;
+            applyDampingAndSpeedLimit(beetle.body, movementDampingFactor, maxSpeed, deltaTime);
+
+            // Update rotation to point to the target
+            if ((dx*dx+dy*dy) > 100) {
+                beetle.targetRotation = Math.atan2(dy, dx);
             }
 
-            // Update position
-            enemy.x += enemy.vx;
-            enemy.y += enemy.vy;
-
-        } else if (enemy.state === 'pausing') {
-            // Wait at position
-            enemy.pauseTimer--;
-
+        } else if (beetle.state === 'pausing') {
             // Calculate dynamic shoot timing based on player power
             // Higher power = shoots sooner (divide pause by power level)
             const basePauseBeforeShoot = 100; // Base pause time in frames
             const adjustedPauseBeforeShoot = Math.max(10, Math.floor(basePauseBeforeShoot / maxBullets));
-            const dynamicShootTiming = enemyPauseDuration - adjustedPauseBeforeShoot;
+            const dynamicShootTiming = beetlePauseDuration - adjustedPauseBeforeShoot;
 
-            // Start shooting before leaving
-            if (enemy.pauseTimer === dynamicShootTiming && !enemy.hasShot) {
-                enemy.state = 'shooting';
-                enemy.hasShot = true;
-                // Calculate bullets based on player power: 1 bullet per 10 power levels
-                enemy.shootingBulletsRemaining = Math.floor(maxBullets / 10) + 1;
-                enemy.shootingTimer = 0;
-            }
+            // Point toward player while paused
+            const dx = ship.body.x - beetle.body.x;
+            const dy = ship.body.y - beetle.body.y;
 
-            if (enemy.pauseTimer <= 0) {
-                enemy.state = 'exiting';
-            }
-        } else if (enemy.state === 'shooting') {
-            // Fire bullets one at a time with delay
-            enemy.shootingTimer++;
+            // Update rotation to point to the target
+            if ((dx*dx+dy*dy) > 100) {
+                beetle.targetRotation = Math.atan2(dy, dx);
+            }            
 
-            if (enemy.shootingTimer >= 18) { // 300ms at 60fps = 18 frames
-                shootEnemyBullet(enemy);
-                enemy.shootingBulletsRemaining--;
-                enemy.shootingTimer = 0;
-
-                if (enemy.shootingBulletsRemaining <= 0) {
-                    enemy.state = 'pausing'; // Return to pausing state
+            // Start shooting before leaving (check before decrementing timer)
+            if (beetle.pauseTimer > dynamicShootTiming && !beetle.hasShot) {
+                // Check if we'll cross the threshold this frame
+                if (beetle.pauseTimer - deltaTime <= dynamicShootTiming) {
+                    beetle.state = 'shooting';
+                    beetle.hasShot = true;
+                    // Calculate bullets based on player power: 1 bullet per 10 power levels
+                    beetle.shootingBulletsRemaining = Math.floor(maxBullets / 10) + 1;
+                    beetle.shootingTimer = 0;
                 }
             }
-        } else if (enemy.state === 'exiting') {
-            // Calculate acceleration toward exit
-            const dx = enemy.exitX - enemy.x;
-            const dy = enemy.exitY - enemy.y;
-            const distance = Math.sqrt(dx * dx + dy * dy);
 
-            if (distance > 0) {
-                // Apply acceleration toward exit
+            // Apply damping and limit max speed
+            applyDampingAndSpeedLimit(beetle.body, stillDampingFactor, maxSpeed, deltaTime);
+
+            // Wait at position
+            beetle.pauseTimer -= deltaTime;
+
+            if (beetle.pauseTimer <= 0) {
+                beetle.state = 'exiting';
+            }
+        } else if (beetle.state === 'shooting') {
+            // Point toward player while shooting
+            const dx = ship.body.x - beetle.body.x;
+            const dy = ship.body.y - beetle.body.y;
+            beetle.targetRotation = Math.atan2(dy, dx);
+
+            // Fire bullets one at a time with delay
+            beetle.shootingTimer += deltaTime;
+
+            if (beetle.shootingTimer >= 18) { // 300ms at 60fps = 18 frames
+                shootEnemyBullet(beetle);
+                beetle.shootingBulletsRemaining--;
+                beetle.shootingTimer = 0;
+
+                if (beetle.shootingBulletsRemaining <= 0) {
+                    beetle.state = 'pausing'; // Return to pausing state
+                }
+            }
+
+            // Apply damping and limit max speed
+            applyDampingAndSpeedLimit(beetle.body, stillDampingFactor, maxSpeed, deltaTime);
+
+        } else if (beetle.state === 'exiting') {
+            // Calculate acceleration toward exit
+            const dx = beetle.exitX - beetle.body.x;
+            const dy = beetle.exitY - beetle.body.y;
+            const distanceSquared = getDistanceSquared(beetle.body.x, beetle.body.y, beetle.exitX, beetle.exitY);
+
+            if (distanceSquared > 0) {
+                // Apply acceleration toward exit (need actual distance for normalization)
+                const distance = Math.sqrt(distanceSquared);
                 const ax = (dx / distance) * acceleration;
                 const ay = (dy / distance) * acceleration;
 
-                enemy.vx += ax;
-                enemy.vy += ay;
+                beetle.body.vx += ax * deltaTime;
+                beetle.body.vy += ay * deltaTime;
 
                 // Apply damping and limit max speed
-                enemy.vx *= damping;
-                enemy.vy *= damping;
-                const speed = Math.sqrt(enemy.vx * enemy.vx + enemy.vy * enemy.vy);
-                if (speed > maxSpeed) {
-                    enemy.vx = (enemy.vx / speed) * maxSpeed;
-                    enemy.vy = (enemy.vy / speed) * maxSpeed;
-                }
+                applyDampingAndSpeedLimit(beetle.body, movementDampingFactor, maxSpeed, deltaTime);
 
-                // Update position
-                enemy.x += enemy.vx;
-                enemy.y += enemy.vy;
+                // Update rotation to point to the target
+                if ((dx*dx+dy*dy) > 100) {
+                    beetle.targetRotation = Math.atan2(dy, dx);
+                }
             }
 
-            // Remove if off screen
-            if (enemy.x < -enemySize || enemy.x > canvas.width + enemySize ||
-                enemy.y < -enemySize || enemy.y > canvas.height + enemySize) {
-                enemies.splice(i, 1);
+            // Remove if off screen and moving away
+            if (isBodyOffscreenAndMovingAway(beetle.body, beetleSize)) {
+                beetle.body.destroy = true;
+                removeAtSwap(beetles, i);
             }
         }
+
+        // Interpolate rotation toward target rotation (for all beetles)
+        const rotationSpeed = 0.1 * deltaTime; // Adjust this value to control rotation speed
+        let rotationDiff = beetle.targetRotation - beetle.rotation;
+
+        // Normalize the difference to the range [-PI, PI] for shortest path
+        while (rotationDiff > Math.PI) rotationDiff -= Math.PI*2;
+        while (rotationDiff < -Math.PI) rotationDiff += Math.PI*2;
+
+        const rotationSpeedCap = Math.PI/5;
+        if (rotationDiff > rotationSpeedCap) rotationDiff = rotationSpeedCap;
+        if (rotationDiff < -rotationSpeedCap) rotationDiff = -rotationSpeedCap;
+
+        // Interpolate
+        beetle.rotationVelocity = rotationDiff;
+        beetle.rotation += rotationDiff * rotationSpeed;
+
+        // Normalize rotation to [0, 2*PI]
+        while (beetle.rotation < 0) beetle.rotation += Math.PI*2;
+        while (beetle.rotation >= Math.PI) beetle.rotation -= Math.PI*2;
     }
 }
 
-function drawEnemies() {
-    for (let enemy of enemies) {
-        // Flash white when hit
-        const color = enemy.hitFlash > 0 ? '#ffffff' : enemy.baseColor;
-
-        // Calculate horizontal scale based on velocity (banking effect)
-        // Normalize vx by max expected speed (~15), scale from 1.0 to 0.55 (45% reduction)
-        const normalizedVx = Math.abs(enemy.vx) / 15;
-        const horizontalScale = 1.0 - Math.min(normalizedVx * 2, 1.0);
-
-        ctx.save();
-        ctx.translate(enemy.x, enemy.y);
-        ctx.scale(horizontalScale, 1.0);
-
-        // Draw space bug
-        ctx.fillStyle = color;
-
-        // Main body (ellipse)
-        ctx.beginPath();
-        ctx.ellipse(0, 0, enemy.size / 3, enemy.size / 2, 0, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Head (smaller circle at top)
-        ctx.beginPath();
-        ctx.arc(0, -enemy.size / 3, enemy.size / 4, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Antennae
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(-enemy.size / 8, -enemy.size / 2);
-        ctx.lineTo(-enemy.size / 4, -enemy.size * 0.7);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.moveTo(enemy.size / 8, -enemy.size / 2);
-        ctx.lineTo(enemy.size / 4, -enemy.size * 0.7);
-        ctx.stroke();
-
-        // Wings (left and right)
-        ctx.globalAlpha = 0.6;
-        ctx.fillStyle = color;
-
-        // Left wing
-        ctx.beginPath();
-        ctx.ellipse(-enemy.size / 3, 0, enemy.size / 4, enemy.size / 2.5, -0.3, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Right wing
-        ctx.beginPath();
-        ctx.ellipse(enemy.size / 3, 0, enemy.size / 4, enemy.size / 2.5, 0.3, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.globalAlpha = 1.0;
-
-        ctx.restore();
-    }
-}
-
-function spawnLargeEnemy(isSecondUFO = false) {
+function spawnSentinel(adjustY = 0) {
     // Random X position, keeping enemy fully on screen
-    const randomX = Math.random() * (canvas.width - largeEnemyWidth) + largeEnemyWidth / 2;
+    const randomX = Math.random() * (canvas.width - sentinelWidth) + sentinelWidth / 2;
 
-    // Calculate health: base 10 HP + 1 per 5 power levels
-    const health = 10 + Math.floor(maxBullets / 5);
+    // Calculate health: base 10 HP + 1 per power level
+    const health = 10 + Math.floor(maxBullets);
 
-    // If this is the second UFO, place it higher to avoid overlap
-    const startY = isSecondUFO ? -largeEnemyHeight - 150 : -largeEnemyHeight;
+    // If this is the second sentinel, place it higher to avoid overlap
+    const startY = -sentinelHeight - adjustY;
 
-    largeEnemies.push({
-        x: randomX,
-        y: startY,
-        width: largeEnemyWidth,
-        height: largeEnemyHeight,
-        speed: largeEnemySpeed,
+    const mass = 20; // Sentinels are large and heavy
+    const body = Physics.addCollisionBody(randomX, startY, sentinelWidth / 2, 0, sentinelSpeed, mass);
+
+    sentinels.push({
+        body: body,
+        width: sentinelWidth,
+        height: sentinelHeight,
         color: '#cccccc',
         health: health,
         hitFlash: 0,
         shootTimer: 60, // Shoot every 60 frames (1 second at 60fps)
         bulletRotation: 0, // Current rotation angle
-        rotationDirection: Math.random() < 0.5 ? 1 : -1 // Randomly rotate clockwise or counter-clockwise
+        rotationDirection: Math.random() < 0.5 ? 1 : -1, // Randomly rotate clockwise or counter-clockwise
+        blinkTimer: Math.random() * Math.PI * 2, // Random starting phase for lights
+        spawnX: randomX,
+        targetY: body.y
     });
 }
 
@@ -1167,7 +1279,7 @@ function spawnCentipede() {
 
     // Create segments based on player power level
     const numSegments = 5 + Math.floor(maxBullets * 0.2);
-    const bodyHealth = Math.floor((5 + Math.floor(maxBullets * 0.1)) / 2);
+    const bodyHealth = Math.floor(5 + Math.floor(maxBullets * 0.025));
     const headHealth = bodyHealth * 10;
     const segmentSize = 40;
     const segmentSpacing = segmentSize; // Distance between segment centers (they touch)
@@ -1185,9 +1297,7 @@ function spawnCentipede() {
     }
 
     // Calculate total distance and direction
-    const dx = endX - startX;
-    const dy = endY - startY;
-    const totalDistance = Math.sqrt(dx * dx + dy * dy);
+    const totalDistance = getDistance(startX, startY, endX, endY);
     const speed = 1;
 
     centipedes.push({
@@ -1205,23 +1315,34 @@ function spawnCentipede() {
     });
 }
 
+function updateCentipedeSpawnQueue() {
+    // If there are centipedes in the queue
+    if (centipedeSpawnQueue > 0) {
+        // Countdown the timer
+        centipedeSpawnTimer -= deltaTime;
+
+        // If timer reached zero, spawn a centipede
+        if (centipedeSpawnTimer <= 0) {
+            spawnCentipede();
+            centipedeSpawnQueue--;
+            // Reset timer for next centipede (300 frames = 5 seconds at 60fps)
+            centipedeSpawnTimer = 300;
+        }
+    }
+}
+
 function updateCentipedes() {
     for (let i = centipedes.length - 1; i >= 0; i--) {
         const centipede = centipedes[i];
 
         // Move the head along the path
-        centipede.distance += centipede.speed;
-        centipede.wiggleTime += 0.05; // Increment for sine wave animation
-
-        // Calculate head position (allow it to continue beyond endpoint)
-        const progress = centipede.distance / centipede.totalDistance;
-        const baseHeadX = centipede.startX + (centipede.endX - centipede.startX) * progress;
-        const baseHeadY = centipede.startY + (centipede.endY - centipede.startY) * progress;
+        centipede.distance += centipede.speed * deltaTime;
+        centipede.wiggleTime += 0.05 * deltaTime; // Increment for sine wave animation
 
         // Calculate perpendicular direction for sine wave (rotate 90 degrees)
         const pathDx = centipede.endX - centipede.startX;
         const pathDy = centipede.endY - centipede.startY;
-        const pathLength = Math.sqrt(pathDx * pathDx + pathDy * pathDy);
+        const pathLength = getDistance(centipede.startX, centipede.startY, centipede.endX, centipede.endY);
         const perpX = -pathDy / pathLength; // Perpendicular X
         const perpY = pathDx / pathLength;  // Perpendicular Y
 
@@ -1243,35 +1364,17 @@ function updateCentipedes() {
             segment.y = baseY + perpY * sineOffset;
 
             // Update flash timers
-            if (segment.hitFlash > 0) {
-                segment.hitFlash--;
-            }
-            if (segment.shootFlash > 0) {
-                segment.shootFlash--;
-            }
+            segment.hitFlash = updateTimer(segment.hitFlash, deltaTime);
+            segment.shootFlash = updateTimer(segment.shootFlash, deltaTime);
 
             // Visible segments have 1% chance to fire aimed bullet each frame
             if (segment.health > 0 &&
                 segment.x >= 0 && segment.x <= canvas.width &&
                 segment.y >= 0 && segment.y <= canvas.height &&
-                Math.random() < 0.01) {
+                Math.random() < 0.01 * deltaTime) {
 
                 // Fire aimed bullet at player
-                const dx = ship.x - segment.x;
-                const dy = ship.y - segment.y;
-                const distance = Math.sqrt(dx * dx + dy * dy);
-                const vx = (dx / distance) * enemyBulletSpeed * 1.5;
-                const vy = (dy / distance) * enemyBulletSpeed * 1.5;
-
-                enemyBullets.push({
-                    x: segment.x,
-                    y: segment.y,
-                    vx: vx,
-                    vy: vy,
-                    size: 6,
-                    color: '#ff69b4',
-                    aimed: true
-                });
+                spawnAimedBullet(segment.x, segment.y, ship.body.x, ship.body.y, enemyBulletSpeed * 1.5);
 
                 // Flash red when shooting
                 segment.shootFlash = 5;
@@ -1281,22 +1384,10 @@ function updateCentipedes() {
             if (segment.health > 0 &&
                 segment.x >= 0 && segment.x <= canvas.width &&
                 segment.y >= 0 && segment.y <= canvas.height &&
-                Math.random() < 0.02) {
+                Math.random() < 0.02 * deltaTime) {
 
                 // Fire random direction bullet
-                const angle = Math.random() * Math.PI * 2;
-                const vx = Math.cos(angle) * enemyBulletSpeed;
-                const vy = Math.sin(angle) * enemyBulletSpeed;
-
-                enemyBullets.push({
-                    x: segment.x,
-                    y: segment.y,
-                    vx: vx,
-                    vy: vy,
-                    size: 6,
-                    color: '#ff69b4',
-                    aimed: false
-                });
+                spawnRandomBullet(segment.x, segment.y, enemyBulletSpeed);
 
                 // Flash red when shooting
                 segment.shootFlash = 5;
@@ -1314,7 +1405,7 @@ function updateCentipedes() {
 
         if (allSegmentsDestroyed) {
             // Remove if all segments destroyed
-            centipedes.splice(i, 1);
+            removeAtSwap(centipedes, i);
         } else if (allSegmentsOffScreen) {
             // Teleport to new random position if all segments off screen but still has living segments
             const startLeft = Math.random() < 0.5;
@@ -1329,9 +1420,7 @@ function updateCentipedes() {
             centipede.endX = endX;
             centipede.endY = endY;
 
-            const dx = endX - startX;
-            const dy = endY - startY;
-            centipede.totalDistance = Math.sqrt(dx * dx + dy * dy);
+            centipede.totalDistance = getDistance(startX, startY, endX, endY);
             centipede.distance = 0;
 
             // Reset all segment positions to new start
@@ -1343,182 +1432,64 @@ function updateCentipedes() {
     }
 }
 
-function drawCentipedes() {
-    for (let centipede of centipedes) {
-        for (let i = 0; i < centipede.segments.length; i++) {
-            const segment = centipede.segments[i];
-            if (segment.health <= 0) continue; // Don't draw destroyed segments
-
-            // Flash white when hit, red when shooting, otherwise normal color
-            let color = centipede.color;
-            if (segment.shootFlash > 0) color = '#ff0000';
-            if (segment.hitFlash > 0) color = '#ffffff';
-
-            // Calculate direction angle
-            let angle;
-            if (i === 0) {
-                // Head: use path direction
-                const dx = centipede.endX - centipede.startX;
-                const dy = centipede.endY - centipede.startY;
-                angle = Math.atan2(dy, dx);
-            } else {
-                // Body: face towards previous segment
-                const prevSeg = centipede.segments[i - 1];
-                const dx = prevSeg.x - segment.x;
-                const dy = prevSeg.y - segment.y;
-                angle = Math.atan2(dy, dx);
-            }
-
-            // Save context and apply rotation
-            ctx.save();
-            ctx.translate(segment.x, segment.y);
-            ctx.rotate(angle);
-
-            // Draw main body (centered at origin)
-            ctx.fillStyle = color;
-            ctx.beginPath();
-            ctx.arc(0, 0, segment.size / 2, 0, Math.PI * 2);
-            ctx.fill();
-
-            // Draw outline
-            ctx.strokeStyle = '#000000';
-            ctx.lineWidth = 2;
-            ctx.stroke();
-
-            const radius = segment.size / 2;
-
-            if (i === 0) {
-                // Head segment - draw eyes and pinchers
-                // Eyes (positioned towards front/right side)
-                ctx.fillStyle = '#ffffff';
-                ctx.beginPath();
-                ctx.arc(radius * 0.3, -radius * 0.3, radius * 0.25, 0, Math.PI * 2);
-                ctx.arc(radius * 0.3, radius * 0.3, radius * 0.25, 0, Math.PI * 2);
-                ctx.fill();
-
-                // Pupils
-                ctx.fillStyle = '#000000';
-                ctx.beginPath();
-                ctx.arc(radius * 0.3, -radius * 0.3, radius * 0.12, 0, Math.PI * 2);
-                ctx.arc(radius * 0.3, radius * 0.3, radius * 0.12, 0, Math.PI * 2);
-                ctx.fill();
-
-                // Pinchers (pointing forward)
-                ctx.strokeStyle = color === '#ffffff' ? '#ffffff' : centipede.color;
-                ctx.lineWidth = 3;
-                ctx.beginPath();
-                // Top pincher
-                ctx.moveTo(radius * 0.6, -radius * 0.4);
-                ctx.lineTo(radius * 1.2, -radius * 0.6);
-                // Bottom pincher
-                ctx.moveTo(radius * 0.6, radius * 0.4);
-                ctx.lineTo(radius * 1.2, radius * 0.6);
-                ctx.stroke();
-            } else {
-                // Body segments - draw legs perpendicular to body
-                ctx.strokeStyle = color === '#ffffff' ? '#ffffff' : centipede.color;
-                ctx.lineWidth = 2;
-                ctx.beginPath();
-                // Top leg
-                ctx.moveTo(0, -radius);
-                ctx.lineTo(0, -radius * 1.5);
-                // Bottom leg
-                ctx.moveTo(0, radius);
-                ctx.lineTo(0, radius * 1.5);
-                ctx.stroke();
-            }
-
-            // Restore context
-            ctx.restore();
-        }
-    }
-}
-
-function updateLargeEnemies() {
-    for (let i = largeEnemies.length - 1; i >= 0; i--) {
-        const enemy = largeEnemies[i];
+function updateSentinels() {
+    const stillDampingFactor = Math.pow(0.9, deltaTime);
+ 
+    for (let i = sentinels.length - 1; i >= 0; i--) {
+        const enemy = sentinels[i];
 
         // Update hit flash timer
-        if (enemy.hitFlash > 0) {
-            enemy.hitFlash--;
-        }
+        enemy.hitFlash = updateTimer(enemy.hitFlash, deltaTime);
+
+        // Update blink timer for lights
+        enemy.blinkTimer += deltaTime * 0.2; // Speed of blinking
 
         // Update shoot timer and shoot
-        enemy.shootTimer--;
+        enemy.shootTimer -= deltaTime;
         if (enemy.shootTimer <= 0) {
-            shootLargeEnemyBullets(enemy);
+            shootSentinelBullets(enemy);
             enemy.shootTimer = 60; // Reset timer
         }
 
-        enemy.y += enemy.speed;
+        enemy.targetY += sentinelSpeed * deltaTime;
+
+        // Update physics body velocity (sentinels move downward at a constant rate) and position X (to maintain their original X)
+        enemy.body.vy += (enemy.targetY-enemy.body.y) * 0.05 * deltaTime;
+
+        applyDampingAndSpeedLimit(enemy.body, stillDampingFactor, sentinelSpeed * 1.2, deltaTime);
 
         // Remove if off screen
-        if (enemy.y > canvas.height + enemy.height) {
-            largeEnemies.splice(i, 1);
+        if (enemy.body.y > canvas.height + enemy.height) {
+            enemy.body.destroy = true;
+            removeAtSwap(sentinels, i);
         }
-    }
-}
-
-function drawLargeEnemies() {
-    for (let enemy of largeEnemies) {
-        // Flash white when hit
-        const color = enemy.hitFlash > 0 ? '#ffffff' : enemy.color;
-
-        ctx.save();
-        ctx.translate(enemy.x, enemy.y);
-
-        // Draw flying saucer UFO
-        ctx.fillStyle = color;
-
-        // Main disc (ellipse)
-        ctx.beginPath();
-        ctx.ellipse(0, 0, enemy.width / 2, enemy.height / 2, 0, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Darker bottom edge of disc
-        ctx.fillStyle = enemy.hitFlash > 0 ? '#cccccc' : '#888888';
-        ctx.beginPath();
-        ctx.ellipse(0, enemy.height / 4, enemy.width / 2, enemy.height / 4, 0, 0, Math.PI);
-        ctx.fill();
-
-        // Dome on top (lighter color)
-        ctx.fillStyle = color;
-        ctx.beginPath();
-        ctx.ellipse(0, -enemy.height / 4, enemy.width / 4, enemy.height / 3, 0, Math.PI, 0, true);
-        ctx.fill();
-
-        // Cockpit window (darker)
-        ctx.fillStyle = enemy.hitFlash > 0 ? '#666666' : '#333333';
-        ctx.beginPath();
-        ctx.ellipse(0, -enemy.height / 3, enemy.width / 6, enemy.height / 5, 0, Math.PI, 0, true);
-        ctx.fill();
-
-        ctx.restore();
     }
 }
 
 function shootEnemyBullet(enemy) {
-    // Calculate direction toward player
-    const dx = ship.x - enemy.x;
-    const dy = ship.y - enemy.y;
+    // Don't spawn bullets during dying state
+    if (gameState === 'dying') return;
+
+    // Calculate direction to player
+    const dx = ship.body.x - enemy.body.x;
+    const dy = ship.body.y - enemy.body.y;
     const distance = Math.sqrt(dx * dx + dy * dy);
 
-    // Normalize and multiply by speed (1.5x for aimed bullets)
-    const vx = (dx / distance) * enemyBulletSpeed * 1.5;
-    const vy = (dy / distance) * enemyBulletSpeed * 1.5;
+    // Normalize direction and offset spawn position to front edge
+    const nx = dx / distance;
+    const ny = dy / distance;
+    const offset = enemy.size / 2;
+    const spawnX = enemy.body.x + nx * offset;
+    const spawnY = enemy.body.y + ny * offset;
 
-    enemyBullets.push({
-        x: enemy.x,
-        y: enemy.y,
-        vx: vx,
-        vy: vy,
-        size: 6,
-        color: '#ff69b4', // Pink color
-        aimed: true // Aimed at player
-    });
+    // Fire aimed bullet at player from front edge
+    spawnAimedBullet(spawnX, spawnY, ship.body.x, ship.body.y, enemyBulletSpeed * 1.5);
 }
 
-function shootLargeEnemyBullets(enemy) {
+function shootSentinelBullets(enemy) {
+    // Don't spawn bullets during dying state
+    if (gameState === 'dying') return;
+
     // Shoot bullets in a circle with rotation
     // Base 8 bullets + 1 bullet per 5 player power levels
     const bulletCount = 8 + Math.floor(maxBullets / 5);
@@ -1528,15 +1499,15 @@ function shootLargeEnemyBullets(enemy) {
         const vx = Math.cos(angle) * enemyBulletSpeed;
         const vy = Math.sin(angle) * enemyBulletSpeed;
 
-        enemyBullets.push({
-            x: enemy.x,
-            y: enemy.y,
-            vx: vx,
-            vy: vy,
-            size: 6,
-            color: '#ff69b4', // Pink color
-            aimed: false // Not aimed at player
-        });
+        addEnemyBullet(
+            enemy.body.x,
+            enemy.body.y,
+            vx,
+            vy,
+            6,
+            '#ff69b4',
+            false
+        );
     }
 
     // Rotate by 10 degrees for next burst (10 degrees = ~0.1745 radians)
@@ -1547,41 +1518,14 @@ function updateEnemyBullets() {
     for (let i = enemyBullets.length - 1; i >= 0; i--) {
         const bullet = enemyBullets[i];
 
-        bullet.x += bullet.vx;
-        bullet.y += bullet.vy;
+        bullet.x += bullet.vx * deltaTime;
+        bullet.y += bullet.vy * deltaTime;
 
         // Remove bullets that go off screen
         if (bullet.x < -10 || bullet.x > canvas.width + 10 ||
             bullet.y < -10 || bullet.y > canvas.height + 10) {
-            enemyBullets.splice(i, 1);
-        }
-    }
-}
-
-function drawEnemyBullets() {
-    for (let bullet of enemyBullets) {
-        if (bullet.aimed) {
-            // Draw aimed bullets as thin cyan laser bolts (50% larger visually)
-            ctx.fillStyle = '#00ffff'; // Cyan
-            const angle = Math.atan2(bullet.vy, bullet.vx);
-            const length = 12 * 1.5; // 50% larger
-            const width = 2 * 1.5; // 50% larger
-
-            ctx.save();
-            ctx.translate(bullet.x, bullet.y);
-            ctx.rotate(angle);
-            ctx.fillRect(-length / 2, -width / 2, length, width);
-            ctx.restore();
-        } else {
-            // Draw non-aimed bullets as pink diamonds (squares rotated 45 degrees, 50% larger visually)
-            ctx.fillStyle = bullet.color;
-            const size = bullet.size * 1.5; // 50% larger visually
-
-            ctx.save();
-            ctx.translate(bullet.x, bullet.y);
-            ctx.rotate(Math.PI / 4); // Rotate 45 degrees to make diamond shape
-            ctx.fillRect(-size / 2, -size / 2, size, size);
-            ctx.restore();
+            returnEnemyBullet(bullet);
+            removeAtSwap(enemyBullets, i);
         }
     }
 }
@@ -1604,53 +1548,12 @@ function spawnExplosion(x, y, size) {
 function updateExplosions() {
     for (let i = explosions.length - 1; i >= 0; i--) {
         const explosion = explosions[i];
-        explosion.timer++;
+        explosion.timer += deltaTime;
 
         // Remove explosion when animation is complete
         if (explosion.timer >= explosion.lifetime) {
-            explosions.splice(i, 1);
+            removeAtSwap(explosions, i);
         }
-    }
-}
-
-function drawExplosions() {
-    for (let explosion of explosions) {
-        // Calculate scale: grows for first half, shrinks for second half
-        const halfLife = explosion.lifetime / 2;
-        let scale;
-        if (explosion.timer <= halfLife) {
-            // Growing phase
-            scale = explosion.timer / halfLife;
-        } else {
-            // Shrinking phase
-            scale = 1 - ((explosion.timer - halfLife) / halfLife);
-        }
-
-        const size = explosion.maxSize * scale;
-
-        // Draw yellow circle (outer) with random offset
-        ctx.fillStyle = '#ffff00';
-        ctx.beginPath();
-        ctx.arc(
-            explosion.x + explosion.yellowOffsetX,
-            explosion.y + explosion.yellowOffsetY,
-            size,
-            0,
-            Math.PI * 2
-        );
-        ctx.fill();
-
-        // Draw white circle (inner, 60% of outer size) with random offset
-        ctx.fillStyle = '#ffffff';
-        ctx.beginPath();
-        ctx.arc(
-            explosion.x + explosion.whiteOffsetX,
-            explosion.y + explosion.whiteOffsetY,
-            size * 0.6,
-            0,
-            Math.PI * 2
-        );
-        ctx.fill();
     }
 }
 
@@ -1664,39 +1567,26 @@ function spawnScorePopup(x, y, points) {
     });
 }
 
-function updateScorePopups() {
-    for (let i = scorePopups.length - 1; i >= 0; i--) {
-        const popup = scorePopups[i];
-        popup.timer++;
-
-        // Move upward
-        popup.y -= 1;
-
-        // Remove when lifetime expires
-        if (popup.timer >= popup.lifetime) {
-            scorePopups.splice(i, 1);
-        }
+function addScore(x, y, points) {
+    if (!godMode) {
+        spawnScorePopup(x, y, points);
+        score += points;
     }
 }
 
-function drawScorePopups() {
-    ctx.textAlign = 'center';
-    ctx.font = 'bold 20px Arial';
+function updateScorePopups() {
+    for (let i = scorePopups.length - 1; i >= 0; i--) {
+        const popup = scorePopups[i];
+        popup.timer += deltaTime;
 
-    for (let popup of scorePopups) {
-        // Calculate alpha (fade out in last 20 frames)
-        let alpha = 1.0;
-        const fadeStart = popup.lifetime - 20;
-        if (popup.timer > fadeStart) {
-            alpha = 1.0 - ((popup.timer - fadeStart) / 20);
+        // Move upward
+        popup.y -= 1 * deltaTime;
+
+        // Remove when lifetime expires
+        if (popup.timer >= popup.lifetime) {
+            removeAtSwap(scorePopups, i);
         }
-
-        // Draw with yellow color and fading alpha
-        ctx.fillStyle = `rgba(255, 255, 0, ${alpha})`;
-        ctx.fillText(`+${popup.points}`, popup.x, popup.y);
     }
-
-    ctx.textAlign = 'left';
 }
 
 function spawnPowerupText(x, y) {
@@ -1711,191 +1601,46 @@ function spawnPowerupText(x, y) {
 function updatePowerupTexts() {
     for (let i = powerupTexts.length - 1; i >= 0; i--) {
         const text = powerupTexts[i];
-        text.timer++;
+        text.timer += deltaTime;
 
         // Don't move - stay at same Y position
 
         // Remove when lifetime expires
         if (text.timer >= text.lifetime) {
-            powerupTexts.splice(i, 1);
+            removeAtSwap(powerupTexts, i);
         }
     }
-}
-
-function drawPowerupTexts() {
-    ctx.textAlign = 'center';
-    ctx.font = 'bold 24px Arial';
-
-    const powerupText = 'LEVEL UP!';
-
-    for (let text of powerupTexts) {
-        // Calculate alpha (fade out over entire lifetime)
-        let alpha = 1.0 - (text.timer / text.lifetime);
-
-        // Calculate letter spacing (expand from 10 to 40 pixels over lifetime)
-        const letterSpacing = 10 + (text.timer / text.lifetime) * 30;
-
-        // Draw each letter individually with spacing
-        ctx.fillStyle = `rgba(255, 105, 180, ${alpha})`; // Hot pink
-
-        // Calculate total width to center the text
-        const totalWidth = (powerupText.length - 1) * letterSpacing;
-        let startX = text.x - totalWidth / 2;
-
-        for (let i = 0; i < powerupText.length; i++) {
-            ctx.fillText(powerupText[i], startX + i * letterSpacing, text.y);
-        }
-    }
-
-    ctx.textAlign = 'left';
-}
-
-function renderTitleScreen() {
-    // Clear canvas
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    // Draw star field
-    drawStars();
-
-    // Draw title
-    ctx.fillStyle = '#00ffff';
-    ctx.font = 'bold 64px Arial';
-    ctx.textAlign = 'center';
-    ctx.fillText('VIBE SHOOTER', canvas.width / 2, canvas.height / 2 - 50);
-
-    // Draw instruction
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 24px Arial';
-    ctx.fillText('Press Fire to Start', canvas.width / 2, canvas.height / 2 + 50);
-
-    // Draw high score
-    ctx.fillStyle = '#ffff00';
-    ctx.font = 'bold 32px Arial';
-    ctx.fillText(`High Score: ${highScore}`, canvas.width / 2, canvas.height / 2 + 120);
-
-    // Reset text align
-    ctx.textAlign = 'left';
 }
 
 // Render the game
-function render() {
-    if (gameState === 'title') {
-        renderTitleScreen();
-        return;
-    }
-
-    // Render game scene for both 'playing' and 'dying' states
-    // Clear canvas
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    // Draw star field
-    drawStars();
-
-    // Draw asteroids
-    drawAsteroids();
-
-    // Draw large enemies
-    drawLargeEnemies();
-
-    // Draw enemies
-    drawEnemies();
-
-    // Draw centipedes
-    drawCentipedes();
-
-    // Draw enemy bullets
-    drawEnemyBullets();
-
-    // Draw bullets
-    drawBullets();
-
-    // Draw explosions
-    drawExplosions();
-
-    // Draw score popups
-    drawScorePopups();
-
-    // Draw powerup texts
-    drawPowerupTexts();
-
-    // Draw ship as spaceship (only if playing, hide during dying)
-    if (gameState === 'playing') {
-        // Calculate horizontal scale based on input (banking effect)
-        // Scale from 1.0 (no input) to 0.7 (full input) = 30% reduction
-        const horizontalScale = 1.0 - Math.abs(ship.horizontalInput) * 0.3;
-
-        ctx.save();
-        ctx.translate(ship.x, ship.y);
-        ctx.scale(horizontalScale, 1.0);
-        ctx.translate(-ship.x, -ship.y);
-
-        ctx.fillStyle = ship.color;
-        ctx.beginPath();
-
-        // Nose
-        ctx.moveTo(ship.x, ship.y - ship.size / 2);
-
-        // Right side of cockpit
-        ctx.lineTo(ship.x + ship.size / 6, ship.y - ship.size / 6);
-
-        // Right wing
-        ctx.lineTo(ship.x + ship.size / 2, ship.y);
-        ctx.lineTo(ship.x + ship.size / 4, ship.y + ship.size / 4);
-
-        // Right engine
-        ctx.lineTo(ship.x + ship.size / 6, ship.y + ship.size / 4);
-        ctx.lineTo(ship.x + ship.size / 6, ship.y + ship.size / 2);
-
-        // Bottom center (between engines)
-        ctx.lineTo(ship.x, ship.y + ship.size / 3);
-
-        // Left engine
-        ctx.lineTo(ship.x - ship.size / 6, ship.y + ship.size / 2);
-        ctx.lineTo(ship.x - ship.size / 6, ship.y + ship.size / 4);
-
-        // Left wing
-        ctx.lineTo(ship.x - ship.size / 4, ship.y + ship.size / 4);
-        ctx.lineTo(ship.x - ship.size / 2, ship.y);
-
-        // Left side of cockpit
-        ctx.lineTo(ship.x - ship.size / 6, ship.y - ship.size / 6);
-
-        ctx.closePath();
-        ctx.fill();
-
-        ctx.restore();
-
-        // Draw hitbox as white circle, offset downwards (not scaled)
-        ctx.fillStyle = '#ffffff';
-        ctx.beginPath();
-        ctx.arc(ship.x, ship.y + ship.hitboxOffsetY, ship.hitboxRadius, 0, Math.PI * 2);
-        ctx.fill();
-    }
-
-    // Draw score
-    ctx.fillStyle = '#ffff00';
-    ctx.font = 'bold 24px Arial';
-    ctx.fillText(`Score: ${score}`, 10, 30);
-
-    // Draw god mode indicator
-    if (godMode) {
-        ctx.fillStyle = '#ff0000';
-        ctx.font = 'bold 20px Arial';
-        ctx.fillText('GOD MODE', 10, 60);
-    }
-}
-
 // Game loop
-function gameLoop() {
+function gameLoop(currentTime) {
+    // Calculate deltaTime (1.0 at 60 FPS)
+    if (lastTime === 0) {
+        lastTime = currentTime;
+        deltaTime = 1.0; // Default to 1.0 on first frame
+    } else {
+        const elapsed = currentTime - lastTime;
+        lastTime = currentTime;
+        deltaTime = Math.max(0.1, Math.min(2.0, elapsed * 60 / 1000)); // 1.0 at 60 FPS (16.666ms per frame)
+    }
+
+    // Apply half-speed mode if enabled
+    if (halfSpeedMode) {
+        deltaTime /= 2;
+    }
+
     updateStars();
     handleShooting(); // Check for input in all states
 
     if (gameState === 'playing') {
+        handleMovementInputs();
+
+        Physics.update(deltaTime);
         updateAsteroids();
-        updateEnemies();
-        updateLargeEnemies();
+        updateBeetles();
+        updateSentinels();
+        updateCentipedeSpawnQueue();
         updateCentipedes();
         updateEnemyBullets();
         updateExplosions();
@@ -1904,13 +1649,11 @@ function gameLoop() {
         updateShip();
         updateBullets();
         checkBulletAsteroidCollisions();
-        checkBulletEnemyCollisions();
-        checkBulletLargeEnemyCollisions();
+        checkBulletBeetleCollisions();
+        checkBulletSentinelCollisions();
         checkBulletCentipedeCollisions();
         checkEnemyBulletPlayerCollisions();
-        checkEnemyPlayerCollisions();
-        checkLargeEnemyPlayerCollisions();
-        checkAsteroidPlayerCollisions();
+
 
         // Update high score in memory (saved to localStorage only on death)
         if (score > highScore && !godMode) {
@@ -1918,32 +1661,43 @@ function gameLoop() {
         }
     } else if (gameState === 'dying') {
         // Continue updating some visual elements during death
+        Physics.update(deltaTime);
         updateExplosions();
         updateScorePopups();
         updatePowerupTexts();
         updateEnemyBullets();
         updateBullets();
         updateAsteroids();
-        updateEnemies();
-        updateLargeEnemies();
+        updateBeetles();
+        updateSentinels();
         updateCentipedes();
 
         // Count down death timer
-        deathTimer--;
+        deathTimer -= deltaTime;
         if (deathTimer <= 0) {
             resetGame();
         }
     }
 
-    render();
+    // Render
+    Render3D.render();
     requestAnimationFrame(gameLoop);
 }
 
 // Initialize game
-function init() {
+async function init() {
     console.log('Game initialized. Connect a gamepad to start playing.');
+
+    // Initialize 3D renderer
+    const init3DSuccess = await Render3D.init(canvas);
+    if (init3DSuccess !== false) {
+        console.log('3D WebGL renderer initialized');
+    } else {
+        console.error('Failed to initialize 3D renderer');
+    }
+
     initStars();
-    gameLoop();
+    requestAnimationFrame(gameLoop);
 }
 
 // Start the game when page loads

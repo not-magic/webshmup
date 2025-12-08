@@ -7,7 +7,7 @@
     <style>
         body {
             margin: 0;
-            padding: 0;
+            padding: 20px;
             display: flex;
             justify-content: center;
             align-items: center;
@@ -23,9 +23,10 @@
         canvas {
             border: 2px solid #fff;
             background-color: #000;
+            display: block;
         }
 
-        #info {
+        #info, #controllerInfo {
             color: #fff;
             margin-top: 20px;
             font-size: 14px;
@@ -34,9 +35,23 @@
 </head>
 <body>
     <div id="gameContainer">
-        <canvas id="gameCanvas" width="600" height="800"></canvas>
+        <h3 style="color: #fff; text-align: center; margin: 0 0 10px 0;">Vibe Shooter</h3>
+        <canvas id="canvas3d" width="600" height="800" style="margin: 0 auto;"></canvas>
         <div id="info">Use arrow keys to move, space bar to shoot. Or connect a gamepad/joystick to use left stick/D-pad to move and A button to shoot. Tap fire for burst shots, hold for rapid fire!</div>
+        <div id="controllerInfo"></div>
     </div>
+
+    <!-- three.js library (local non-minified) -->
+    <script src="lib/three.js"></script>
+    <script src="lib/GLTFLoader.js"></script>
+
+    <!-- rendering utilities -->
+    <script src="instanced_render_pool.js"></script>
+    <!-- 3D renderer -->
+    <script src="render.js"></script>
+
+    <!-- Physics system -->
+    <script src="physics.js"></script>
 
     <script src="game.js"></script>
 </body>
